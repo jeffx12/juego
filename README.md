@@ -19,12 +19,16 @@ using namespace std;
 #define INMUNIDAD_DURACION 900
 #define MENSAJES_Y_OFFSET (ALTO_PISTA + 8)
 #define LINEA_ITEM_JUGADOR (ALTO_PISTA + 8 + 2)
-#define LINEA_ITEM_BOT (ALTO_PISTA + 8 + 3)
+#define LINEA_ITEM_BOT (ALTO_PISTA + 8 + 5)
+#define BOOST_DURACION 300
+#define SLOWDOWN_DURACION 600
 
 enum ItemType {
     ITEM_INMUNIDAD,
     ITEM_TELETRANSPORTE,
     ITEM_TRAMPA,
+    ITEM_BOOST,
+    ITEM_SLOWDOWN,
     NUM_ITEM_TIPOS
 };
 
@@ -33,14 +37,18 @@ const char* nombre_item(ItemType tipo) {
         case ITEM_INMUNIDAD: return "INMUNIDAD";
         case ITEM_TELETRANSPORTE: return "TELETRANSPORTE";
         case ITEM_TRAMPA: return "TRAMPA";
+        case ITEM_BOOST: return "BOOST";
+        case ITEM_SLOWDOWN: return "SLOWDOWN";
         default: return "DESCONOCIDO";
     }
 }
 
+// Estadisticas globales
 int victorias_j1 = 0, derrotas_j1 = 0, empates = 0;
 int victorias_j2 = 0, derrotas_j2 = 0;
 int victorias_jugador_un_jugador = 0, derrotas_jugador_un_jugador = 0;
 
+// Estado global del juego
 int g_pos_x_player1, g_pos_y_player1;
 int g_pos_x_player2, g_pos_y_player2;
 int g_pos_x_bots[MAX_BOTS], g_pos_y_bots[MAX_BOTS];
@@ -51,9 +59,34 @@ int g_obstaculo_x[NUM_OBSTACULOS], g_obstaculo_y[NUM_OBSTACULOS];
 int g_item_x[NUM_ITEMS], g_item_y[NUM_ITEMS];
 int g_item_recogido[NUM_ITEMS];
 
+// Sistema de items
 int g_inmunidad_player1 = 0;
 int g_inmunidad_player2 = 0;
 int g_inmunidad_bots[MAX_BOTS];
+
+int g_item_portado_player1 = -1;
+int g_item_portado_player2 = -1;
+int g_item_portado_bots[MAX_BOTS];
+
+bool g_item_en_uso_player1 = false;
+bool g_item_en_uso_player2 = false;
+bool g_item_en_uso_bots[MAX_BOTS];
+
+// Sistema de velocidad
+int g_boost_player1 = 0;
+int g_boost_player2 = 0;
+int g_boost_bots[MAX_BOTS];
+
+int g_slowdown_player1 = 0;
+int g_slowdown_player2 = 0;
+int g_slowdown_bots[MAX_BOTS];
+
+// Puntuacion
+int g_puntuacion_player1 = 0;
+int g_puntuacion_player2 = 0;
+int g_puntuacion_bots[MAX_BOTS];
+
+// (Eliminado sistema de vidas múltiples)
 
 void gotoxy(int x, int y) {
     COORD coord = { (SHORT)x, (SHORT)y };
@@ -71,15 +104,60 @@ void limpiarPantalla() {
 int min2(int a, int b) { return (a < b) ? a : b; }
 int max2(int a, int b) { return (a > b) ? a : b; }
 
+void mostrarEstadisticasJuego(bool dos_jugadores) {
+    setColor(11);
+    if (dos_jugadores) {
+        gotoxy(0, ALTO_PISTA + 12);
+        printf("=== ESTADISTICAS ===\n");
+        printf("J1 - Puntos: %d | Boost: %d | Slow: %d\n", 
+               g_puntuacion_player1, g_boost_player1, g_slowdown_player1);
+        printf("J2 - Puntos: %d | Boost: %d | Slow: %d\n", 
+               g_puntuacion_player2, g_boost_player2, g_slowdown_player2);
+        for (int i = 0; i < g_num_active_bots; i++) {
+            printf("Bot%d - Puntos: %d | Boost: %d | Slow: %d\n", 
+                   i+1, g_puntuacion_bots[i], g_boost_bots[i], g_slowdown_bots[i]);
+        }
+    } else {
+        gotoxy(0, ALTO_PISTA + 10);
+        printf("=== ESTADISTICAS ===\n");
+        printf("Jugador - Puntos: %d | Boost: %d | Slow: %d\n", 
+               g_puntuacion_player1, g_boost_player1, g_slowdown_player1);
+        for (int i = 0; i < g_num_active_bots; i++) {
+            printf("Bot%d - Puntos: %d | Boost: %d | Slow: %d\n", 
+                   i+1, g_puntuacion_bots[i], g_boost_bots[i], g_slowdown_bots[i]);
+        }
+    }
+}
+
+void inicializarEstadisticas(int num_bots) {
+    g_puntuacion_player1 = 0;
+    g_puntuacion_player2 = 0;
+    g_boost_player1 = 0;
+    g_boost_player2 = 0;
+    g_slowdown_player1 = 0;
+    g_slowdown_player2 = 0;
+    
+    for (int i = 0; i < MAX_BOTS; i++) {
+        g_puntuacion_bots[i] = 0;
+        g_boost_bots[i] = 0;
+        g_slowdown_bots[i] = 0;
+    }
+    g_num_active_bots = num_bots;
+}
+
 void dibujarCaracter(int x, int y, const char* str, int color, int old_x, int old_y, const char* old_str) {
+    // Borra la posicion anterior
     if (old_x != -1 && old_y != -1) {
         gotoxy(old_x + 1, old_y + 2);
         setColor(10);
         for (size_t i = 0; i < strlen(old_str); i++) printf(" ");
     }
-    gotoxy(x + 1, y + 2);
-    setColor(color);
-    printf("%s", str);
+    // Dibuja la nueva posicion
+    if (x != -1 && y != -1) {
+        gotoxy(x + 1, y + 2);
+        setColor(color);
+        printf("%s", str);
+    }
 }
 
 void dibujarPistaBase() {
@@ -92,28 +170,31 @@ void dibujarPistaBase() {
         gotoxy(0, j + 2);
         printf("|");
         for (int i = 0; i < ANCHO_PISTA; i++) {
-            int dibujado = 0;
+            bool dibujado = false;
+            // Linea de meta
             if (i == META) {
                 setColor(6);
                 printf("|");
-                dibujado = 1;
+                dibujado = true;
             }
+            // Obstaculos
             if (!dibujado) {
                 for (int k = 0; k < NUM_OBSTACULOS; k++) {
                     if (g_obstaculo_x[k] == i && g_obstaculo_y[k] == j) {
                         setColor(12);
                         printf("X");
-                        dibujado = 1;
+                        dibujado = true;
                         break;
                     }
                 }
             }
+            // Items
             if (!dibujado) {
                 for (int k = 0; k < NUM_ITEMS; k++) {
                     if (g_item_recogido[k] == 0 && g_item_x[k] == i && g_item_y[k] == j) {
                         setColor(11);
                         printf("O");
-                        dibujado = 1;
+                        dibujado = true;
                         break;
                     }
                 }
@@ -125,11 +206,13 @@ void dibujarPistaBase() {
         }
         printf("|\n");
     }
+    // Borde inferior
     setColor(2);
     gotoxy(0, ALTO_PISTA + 2);
     printf("+");
     for (int i = 0; i < ANCHO_PISTA; i++) printf("-");
     printf("+\n");
+    // Decoracion meta
     setColor(6);
     for (int j = 0; j < ALTO_PISTA; j++) {
         gotoxy(META + 1, j + 2);
@@ -146,19 +229,20 @@ void dibujarPistaBase() {
 }
 
 void organizarObstaculosYItems() {
-    memset(g_obstaculo_x, 0, sizeof(g_obstaculo_x));
-    memset(g_obstaculo_y, 0, sizeof(g_obstaculo_y));
-    memset(g_item_x, 0, sizeof(g_item_x));
-    memset(g_item_y, 0, sizeof(g_item_y));
+    memset(g_obstaculo_x, -1, sizeof(g_obstaculo_x));
+    memset(g_obstaculo_y, -1, sizeof(g_obstaculo_y));
+    memset(g_item_x, -1, sizeof(g_item_x));
+    memset(g_item_y, -1, sizeof(g_item_y));
     memset(g_item_recogido, 0, sizeof(g_item_recogido));
+    // Obstaculos
     int idx = 0;
     while (idx < NUM_OBSTACULOS) {
-        int x = rand() % (META - 5) + 5;
+        int x = rand() % (META - 10) + 10;
         int y = rand() % ALTO_PISTA;
-        int solapa = 0;
+        bool solapa = false;
         for (int k = 0; k < idx; k++) {
             if (g_obstaculo_x[k] == x && g_obstaculo_y[k] == y) {
-                solapa = 1;
+                solapa = true;
                 break;
             }
         }
@@ -168,20 +252,21 @@ void organizarObstaculosYItems() {
             idx++;
         }
     }
+    // Items
     idx = 0;
     while (idx < NUM_ITEMS) {
-        int x = rand() % (META - 5) + 5;
+        int x = rand() % (META - 10) + 10;
         int y = rand() % ALTO_PISTA;
-        int solapa = 0;
+        bool solapa = false;
         for (int k = 0; k < NUM_OBSTACULOS; k++) {
             if (g_obstaculo_x[k] == x && g_obstaculo_y[k] == y) {
-                solapa = 1;
+                solapa = true;
                 break;
             }
         }
         for (int k = 0; k < idx; k++) {
             if (g_item_x[k] == x && g_item_y[k] == y) {
-                solapa = 1;
+                solapa = true;
                 break;
             }
         }
@@ -211,17 +296,6 @@ void mostrarMarcadores(bool dos_jugadores) {
         printf("Jugador: [W] Arriba, [S] Abajo, [D] Derecha, [A] Retroceder, [Q] Usar item        \n");
         printf("Presiona 'P' para salir o 'R' para reiniciar        \n");
     }
-}
-
-void mostrarControlesJugador2() {
-    setColor(14);
-    gotoxy(0, ALTO_PISTA + 10);
-    printf("Controles Jugador 2:\n");
-    printf("[I] Arriba\n");
-    printf("[K] Abajo\n");
-    printf("[L] Derecha\n");
-    printf("[J] Retroceder\n");
-    printf("[O] Usar item\n");
 }
 
 void mostrarItemPortado(int jugador, int tipo_item, bool en_uso) {
@@ -254,6 +328,7 @@ struct Llegada {
     char nombre[32];
     double tiempo;
 };
+
 void mostrarOrdenLlegada(Llegada* llegadas, int total) {
     printf("\n\nORDEN DE LLEGADA:\n");
     for (int i = 0; i < total; ++i) {
@@ -261,8 +336,6 @@ void mostrarOrdenLlegada(Llegada* llegadas, int total) {
     }
     printf("\n");
 }
-
-// --- FUNCIONES DE ITEMS (RECOGER Y USAR) ---
 
 void recogerItem(int jugador, int* item_portado, bool* en_uso, ItemType efecto, char tecla_uso) {
     gotoxy(0, MENSAJES_Y_OFFSET);
@@ -300,125 +373,177 @@ void usarItemPortado(int* pos_x, int* pos_y, int* inmunidad, int* item_portado, 
     if (*item_portado == -1 || *en_uso) return;
     *en_uso = true;
     mostrarItemPortado(jugador, *item_portado, true);
-
+    
     switch (*item_portado) {
         case ITEM_INMUNIDAD:
             *inmunidad = INMUNIDAD_DURACION;
             gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
             setColor(14);
             printf("INMUNIDAD activada! (30 segundos)                                  ");
+            if (jugador == 0) g_puntuacion_player1 += 10;
+            else if (jugador == 1) g_puntuacion_player2 += 10;
             Sleep(1000);
             gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
             printf("                                                                      ");
             break;
+            
         case ITEM_TELETRANSPORTE: {
             int avance = rand() % 20 + 10;
-            *pos_x = min2(*pos_x + avance, META);
+            *pos_x = min2(*pos_x + avance, META - 1);
             gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
             setColor(14);
             printf("TELETRANSPORTE usado! Avanzas %d posiciones.                         ", avance);
+            if (jugador == 0) g_puntuacion_player1 += 15;
+            else if (jugador == 1) g_puntuacion_player2 += 15;
             Sleep(1000);
             gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
             printf("                                                                      ");
             break;
         }
+        
         case ITEM_TRAMPA: {
             int retroceso = rand() % 10 + 5;
-            if (num_players_bots == 2 && pos_x_otro != NULL) {
+            if (pos_x_otro != NULL) {
                 *pos_x_otro = max2(*pos_x_otro - retroceso, 0);
                 gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
                 setColor(12);
                 printf("TRAMPA usada! El oponente retrocede %d posiciones.                   ", retroceso);
+                if (jugador == 0) g_puntuacion_player1 += 20;
+                else if (jugador == 1) g_puntuacion_player2 += 20;
                 Sleep(1000);
                 gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
                 printf("                                                                      ");
             }
             break;
         }
+        
+        case ITEM_BOOST:
+            if (jugador == 0) g_boost_player1 = BOOST_DURACION;
+            else if (jugador == 1) g_boost_player2 = BOOST_DURACION;
+            gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
+            setColor(10);
+            printf("BOOST activado! Velocidad aumentada por 10 segundos.                 ");
+            if (jugador == 0) g_puntuacion_player1 += 10;
+            else if (jugador == 1) g_puntuacion_player2 += 10;
+            Sleep(1000);
+            gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
+            printf("                                                                      ");
+            break;
+            
+        case ITEM_SLOWDOWN:
+            if (pos_x_otro != NULL && jugador == 0) g_slowdown_player2 = SLOWDOWN_DURACION;
+            else if (pos_x_otro != NULL && jugador == 1) g_slowdown_player1 = SLOWDOWN_DURACION;
+            gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
+            setColor(4);
+            printf("SLOWDOWN usado! El oponente se ralentiza por 20 segundos.             ");
+            if (jugador == 0) g_puntuacion_player1 += 15;
+            else if (jugador == 1) g_puntuacion_player2 += 15;
+            Sleep(1000);
+            gotoxy(0, MENSAJES_Y_OFFSET + 4 + jugador);
+            printf("                                                                      ");
+            break;
     }
+    
     *item_portado = -1;
     *en_uso = false;
     mostrarItemPortado(jugador, -1, false);
 }
 
-void usarItemPortadoBot(int* pos_x, int* pos_y, int* inmunidad, int* item_portado, bool* en_uso, int bot, int num_players_bots, int* pos_x_otro = NULL, int* pos_y_otro = NULL) {
+void usarItemPortadoBot(int* pos_x, int* pos_y, int* inmunidad, int* item_portado, bool* en_uso, int bot) {
     if (*item_portado == -1 || *en_uso) return;
     *en_uso = true;
     mostrarItemPortadoBot(bot, *item_portado, true);
-
+    
     switch (*item_portado) {
         case ITEM_INMUNIDAD:
             *inmunidad = INMUNIDAD_DURACION;
+            g_puntuacion_bots[bot] += 10;
             break;
+            
         case ITEM_TELETRANSPORTE: {
             int avance = rand() % 20 + 10;
-            *pos_x = min2(*pos_x + avance, META);
+            *pos_x = min2(*pos_x + avance, META - 1);
+            g_puntuacion_bots[bot] += 15;
             break;
         }
+        
         case ITEM_TRAMPA: {
             int retroceso = rand() % 10 + 5;
-            if (num_players_bots == 1 && pos_x_otro != NULL) {
-                *pos_x_otro = max2(*pos_x_otro - retroceso, 0);
+            if (g_pos_x_player1 > *pos_x - 20) {
+                g_pos_x_player1 = max2(g_pos_x_player1 - retroceso, 0);
+                g_puntuacion_bots[bot] += 20;
             }
             break;
         }
+        
+        case ITEM_BOOST:
+            g_boost_bots[bot] = BOOST_DURACION;
+            g_puntuacion_bots[bot] += 10;
+            break;
+            
+        case ITEM_SLOWDOWN:
+            g_slowdown_player1 = SLOWDOWN_DURACION;
+            g_puntuacion_bots[bot] += 15;
+            break;
     }
+    
     *item_portado = -1;
     *en_uso = false;
     mostrarItemPortadoBot(bot, -1, false);
 }
 
-void aplicarEfectoItem(int item_idx, int player_id, int bot_id, int num_players_bots) {
+void aplicarEfectoItem(int item_idx, int player_id, int bot_id) {
     if (g_item_recogido[item_idx] == 0) {
         g_item_recogido[item_idx] = 1;
-        dibujarCaracter(-1, -1, " ", 0, g_item_x[item_idx], g_item_y[item_idx], "O");
+        gotoxy(g_item_x[item_idx] + 1, g_item_y[item_idx] + 2);
+        setColor(10);
+        printf(" ");
         ItemType efecto = (ItemType)(rand() % NUM_ITEM_TIPOS);
         if (player_id == 1) {
-            recogerItem(0, &g_inmunidad_player1, (bool*)&g_inmunidad_player1, efecto, 'Q');
+            recogerItem(0, &g_item_portado_player1, &g_item_en_uso_player1, efecto, 'Q');
         } else if (player_id == 2) {
-            recogerItem(1, &g_inmunidad_player2, (bool*)&g_inmunidad_player2, efecto, 'O');
+            recogerItem(1, &g_item_portado_player2, &g_item_en_uso_player2, efecto, 'O');
         } else if (bot_id != -1) {
-            recogerItemBot(bot_id, &g_inmunidad_bots[bot_id], (bool*)&g_inmunidad_bots[bot_id], efecto);
+            recogerItemBot(bot_id, &g_item_portado_bots[bot_id], &g_item_en_uso_bots[bot_id], efecto);
         }
     }
 }
 
-// --- JUEGO DOS JUGADORES ---
-
 void iniciarJuegoDosJugadores() {
-    int k;
     char opcion = 'r';
     clock_t start_time;
     int old_pos_x1, old_pos_y1, old_pos_x2, old_pos_y2;
     Llegada llegadas[2 + MAX_BOTS];
     int total_llegadas = 0;
     int incluir_bots = -1, num_bots = 0;
+    bool player1_eliminado = false, player2_eliminado = false;
     do {
         limpiarPantalla();
         printf("--- Modo Dos Jugadores ---\n");
-        printf("¿Quieres incluir bots en la carrera? (s/n): ");
-        char resp[8];
-        fgets(resp, sizeof(resp), stdin);
-        if (tolower((unsigned char)resp[0]) == 's') {
+        printf("Quieres incluir bots en la carrera? (s/n): ");
+        char resp = _getch();
+        if (tolower(resp) == 's') {
             incluir_bots = 1;
-            printf("¿Cuántos bots quieres? (1-%d): ", MAX_BOTS);
+            printf("s\n");
+            printf("Cuantos bots quieres? (1-%d): ", MAX_BOTS);
             scanf("%d", &num_bots);
             while (num_bots < 1 || num_bots > MAX_BOTS) {
-                printf("Número de bots inválido. Por favor, introduce un valor entre 1 y %d: ", MAX_BOTS);
-                while (getchar() != '\n');
+                printf("Numero de bots invalido. Por favor, introduce un valor entre 1 y %d: ", MAX_BOTS);
                 scanf("%d", &num_bots);
             }
-            while (getchar() != '\n');
-        } else if (tolower((unsigned char)resp[0]) == 'n') {
+            fflush(stdin);
+        } else if (tolower(resp) == 'n') {
+            printf("n\n");
             incluir_bots = 0;
             num_bots = 0;
         } else {
-            printf("Respuesta inválida. Por favor, responde 's' o 'n'.\n");
+            printf("\nRespuesta invalida. Por favor, responde 's' o 'n'.\n");
             Sleep(1000);
         }
     } while (incluir_bots == -1);
 
     while (opcion == 'r') {
+        inicializarEstadisticas(num_bots);
         limpiarPantalla();
         g_pos_x_player1 = 0;
         g_pos_y_player1 = ALTO_PISTA / 2;
@@ -426,653 +551,569 @@ void iniciarJuegoDosJugadores() {
         g_pos_y_player2 = ALTO_PISTA / 2 + 1;
         g_inmunidad_player1 = 0;
         g_inmunidad_player2 = 0;
+        g_item_portado_player1 = -1;
+        g_item_portado_player2 = -1;
+        g_item_en_uso_player1 = false;
+        g_item_en_uso_player2 = false;
         total_llegadas = 0;
+        player1_eliminado = false;
+        player2_eliminado = false;
         for (int l = 0; l < 2 + MAX_BOTS; ++l) llegadas[l].nombre[0] = '\0';
         srand((unsigned int)time(NULL));
         start_time = clock();
         organizarObstaculosYItems();
         dibujarPistaBase();
         mostrarMarcadores(true);
-        mostrarControlesJugador2();
         old_pos_x1 = g_pos_x_player1; old_pos_y1 = g_pos_y_player1;
         old_pos_x2 = g_pos_x_player2; old_pos_y2 = g_pos_y_player2;
-        int g_pos_x_bots_local[MAX_BOTS], g_pos_y_bots_local[MAX_BOTS];
-        int g_inmunidad_bots_local[MAX_BOTS];
-        int g_bot_estado_local[MAX_BOTS];
         for (int b = 0; b < MAX_BOTS; b++) {
-            g_pos_x_bots_local[b] = 0;
-            g_pos_y_bots_local[b] = (ALTO_PISTA / ((num_bots > 0 ? num_bots : 1) + 2)) * (b + 2);
-            g_inmunidad_bots_local[b] = 0;
-            g_bot_estado_local[b] = 0;
+            g_pos_x_bots[b] = 0;
+            g_pos_y_bots[b] = (ALTO_PISTA / (max2(num_bots, 1) + 2)) * (b + 1);
+            if (g_pos_y_bots[b] >= ALTO_PISTA) g_pos_y_bots[b] = ALTO_PISTA - 1;
+            g_inmunidad_bots[b] = 0;
+            g_bot_estado[b] = 0;
+            g_item_portado_bots[b] = -1;
+            g_item_en_uso_bots[b] = false;
         }
-        bool player1_llego_meta = false, player2_llego_meta = false, bot_llego_meta[MAX_BOTS] = {false};
+        bool player1_llego_meta = false, player2_llego_meta = false;
+        bool bot_llego_meta[MAX_BOTS] = {false};
+        bool bot_eliminado[MAX_BOTS] = {false}; // <--- AGREGADO SEGUN INSTRUCCION 1
+        mostrarItemPortado(0, g_item_portado_player1, g_item_en_uso_player1);
+        mostrarItemPortado(1, g_item_portado_player2, g_item_en_uso_player2);
+        for (int b = 0; b < num_bots; b++) {
+            mostrarItemPortadoBot(b, g_item_portado_bots[b], g_item_en_uso_bots[b]);
+        }
         while (1) {
             gotoxy(0, 0);
             setColor(10);
             printf("Tiempo jugado: %.2f segundos", (double)(clock() - start_time) / CLOCKS_PER_SEC);
             if (g_inmunidad_player1 > 0) g_inmunidad_player1--;
             if (g_inmunidad_player2 > 0) g_inmunidad_player2--;
-            for (int b = 0; b < MAX_BOTS; b++) if (g_inmunidad_bots_local[b] > 0) g_inmunidad_bots_local[b]--;
+            for (int b = 0; b < MAX_BOTS; b++) if (g_inmunidad_bots[b] > 0) g_inmunidad_bots[b]--;
+
+            // Actualizar efectos de velocidad
+            if (g_boost_player1 > 0) g_boost_player1--;
+            if (g_boost_player2 > 0) g_boost_player2--;
+            if (g_slowdown_player1 > 0) g_slowdown_player1--;
+            if (g_slowdown_player2 > 0) g_slowdown_player2--;
+            for (int b = 0; b < MAX_BOTS; b++) {
+                if (g_boost_bots[b] > 0) g_boost_bots[b]--;
+                if (g_slowdown_bots[b] > 0) g_slowdown_bots[b]--;
+            }
+
+            // Mostrar estadísticas
+            mostrarEstadisticasJuego(true);
+
             old_pos_x1 = g_pos_x_player1; old_pos_y1 = g_pos_y_player1;
             old_pos_x2 = g_pos_x_player2; old_pos_y2 = g_pos_y_player2;
-            if (!player1_llego_meta && !player2_llego_meta && g_pos_x_player1 == g_pos_x_player2 && g_pos_y_player1 == g_pos_y_player2) {
-                limpiarPantalla();
-                printf("Choque entre jugadores. Empate, fin del juego.\n");
-                empates++;
-                goto fin_juego_dos_jugadores;
-            }
-            if (!player1_llego_meta) {
-                if (GetAsyncKeyState('D') & 0x8000) g_pos_x_player1++;
+            // Jugador 1
+            if (!player1_llego_meta && !player1_eliminado) {
+                int velocidad1 = (g_boost_player1 > 0) ? 2 : 1;
+                if (g_slowdown_player1 > 0) velocidad1 = (velocidad1 > 1) ? 1 : 0;
+                
+                if (GetAsyncKeyState('D') & 0x8000) {
+                    for (int v = 0; v < velocidad1 && g_pos_x_player1 < META; v++) {
+                        g_pos_x_player1++;
+                    }
+                }
                 if (GetAsyncKeyState('A') & 0x8000 && g_pos_x_player1 > 0) g_pos_x_player1--;
                 if (GetAsyncKeyState('W') & 0x8000 && g_pos_y_player1 > 0) g_pos_y_player1--;
                 if (GetAsyncKeyState('S') & 0x8000 && g_pos_y_player1 < ALTO_PISTA - 1) g_pos_y_player1++;
+                if (GetAsyncKeyState('Q') & 0x8000) {
+                    usarItemPortado(&g_pos_x_player1, &g_pos_y_player1, &g_inmunidad_player1, 
+                                  &g_item_portado_player1, &g_item_en_uso_player1, 0, 2, 
+                                  &g_pos_x_player2, &g_pos_y_player2);
+                    Sleep(100);
+                }
             }
-            if (!player2_llego_meta) {
-                if (GetAsyncKeyState('L') & 0x8000) g_pos_x_player2++;
+            // Jugador 2
+            if (!player2_llego_meta && !player2_eliminado) {
+                int velocidad2 = (g_boost_player2 > 0) ? 2 : 1;
+                if (g_slowdown_player2 > 0) velocidad2 = (velocidad2 > 1) ? 1 : 0;
+                
+                if (GetAsyncKeyState('L') & 0x8000) {
+                    for (int v = 0; v < velocidad2 && g_pos_x_player2 < META; v++) {
+                        g_pos_x_player2++;
+                    }
+                }
                 if (GetAsyncKeyState('J') & 0x8000 && g_pos_x_player2 > 0) g_pos_x_player2--;
                 if (GetAsyncKeyState('I') & 0x8000 && g_pos_y_player2 > 0) g_pos_y_player2--;
                 if (GetAsyncKeyState('K') & 0x8000 && g_pos_y_player2 < ALTO_PISTA - 1) g_pos_y_player2++;
+                if (GetAsyncKeyState('O') & 0x8000) {
+                    usarItemPortado(&g_pos_x_player2, &g_pos_y_player2, &g_inmunidad_player2, 
+                                  &g_item_portado_player2, &g_item_en_uso_player2, 1, 2, 
+                                  &g_pos_x_player1, &g_pos_y_player1);
+                    Sleep(100);
+                }
             }
-            if (!player1_llego_meta && !player2_llego_meta && g_pos_x_player1 == g_pos_x_player2 && g_pos_y_player1 == g_pos_y_player2) {
+            // Colision entre jugadores
+            if (!player1_llego_meta && !player2_llego_meta && 
+                g_pos_x_player1 == g_pos_x_player2 && g_pos_y_player1 == g_pos_y_player2) {
                 limpiarPantalla();
                 printf("Choque entre jugadores. Empate, fin del juego.\n");
                 empates++;
-                goto fin_juego_dos_jugadores;
+                break;
             }
-            if (!player1_llego_meta)
+            // Dibuja jugadores
+            if (!player1_llego_meta && !player1_eliminado)
                 dibujarCaracter(g_pos_x_player1, g_pos_y_player1, "[o1]", (g_inmunidad_player1 > 0 ? 14 : 9), old_pos_x1, old_pos_y1, "[o1]");
             else
-                dibujarCaracter(old_pos_x1, old_pos_y1, "    ", 0, old_pos_x1, old_pos_y1, "[o1]");
-            if (!player2_llego_meta)
+                dibujarCaracter(-1, -1, "", 0, old_pos_x1, old_pos_y1, "[o1]");
+            if (!player2_llego_meta && !player2_eliminado)
                 dibujarCaracter(g_pos_x_player2, g_pos_y_player2, "[o2]", (g_inmunidad_player2 > 0 ? 14 : 13), old_pos_x2, old_pos_y2, "[o2]");
             else
-                dibujarCaracter(old_pos_x2, old_pos_y2, "    ", 0, old_pos_x2, old_pos_y2, "[o2]");
+                dibujarCaracter(-1, -1, "", 0, old_pos_x2, old_pos_y2, "[o2]");
+            // IA de bots y dibujo
             int old_pos_x_bots[MAX_BOTS], old_pos_y_bots[MAX_BOTS];
             for (int b = 0; b < MAX_BOTS; b++) {
-                old_pos_x_bots[b] = g_pos_x_bots_local[b];
-                old_pos_y_bots[b] = g_pos_y_bots_local[b];
+                old_pos_x_bots[b] = g_pos_x_bots[b];
+                old_pos_y_bots[b] = g_pos_y_bots[b];
             }
             if (incluir_bots && num_bots > 0) {
                 for (int b = 0; b < num_bots; b++) {
-                    if (g_bot_estado_local[b] == 0 && !bot_llego_meta[b]) {
-                        int next_x = g_pos_x_bots_local[b] + 1;
-                        int next_y = g_pos_y_bots_local[b];
+                    if (g_bot_estado[b] == 0 && !bot_llego_meta[b] && !bot_eliminado[b]) { // <--- INSTRUCCION 3
+                        // IA simple de bot
+                        int next_x = g_pos_x_bots[b] + 1;
                         bool hay_obstaculo = false;
                         for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                            if (g_obstaculo_x[k] == next_x && g_obstaculo_y[k] == next_y) {
+                            if (g_obstaculo_x[k] == next_x && g_obstaculo_y[k] == g_pos_y_bots[b]) {
                                 hay_obstaculo = true;
                                 break;
                             }
                         }
                         if (!hay_obstaculo) {
-                            g_pos_x_bots_local[b]++;
+                            g_pos_x_bots[b] = min2(g_pos_x_bots[b] + 1, META);
                         } else {
-                            if (g_pos_y_bots_local[b] > 0) {
+                            // Intentar evitar obstaculo
+                            bool movido = false;
+                            if (g_pos_y_bots[b] > 0) {
                                 bool libre_arriba = true;
                                 for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                    if (g_obstaculo_x[k] == g_pos_x_bots_local[b] && g_obstaculo_y[k] == g_pos_y_bots_local[b] - 1) {
+                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] - 1) {
                                         libre_arriba = false;
                                         break;
                                     }
                                 }
-                                if (libre_arriba) g_pos_y_bots_local[b]--;
-                                else if (g_pos_y_bots_local[b] < ALTO_PISTA - 1) {
-                                    bool libre_abajo = true;
-                                    for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                        if (g_obstaculo_x[k] == g_pos_x_bots_local[b] && g_obstaculo_y[k] == g_pos_y_bots_local[b] + 1) {
-                                            libre_abajo = false;
-                                            break;
-                                        }
-                                    }
-                                    if (libre_abajo) g_pos_y_bots_local[b]++;
+                                if (libre_arriba) {
+                                    g_pos_y_bots[b]--;
+                                    movido = true;
                                 }
-                            } else if (g_pos_y_bots_local[b] < ALTO_PISTA - 1) {
+                            }
+                            if (!movido && g_pos_y_bots[b] < ALTO_PISTA - 1) {
                                 bool libre_abajo = true;
                                 for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                    if (g_obstaculo_x[k] == g_pos_x_bots_local[b] && g_obstaculo_y[k] == g_pos_y_bots_local[b] + 1) {
+                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] + 1) {
                                         libre_abajo = false;
                                         break;
                                     }
                                 }
-                                if (libre_abajo) g_pos_y_bots_local[b]++;
-                            }
-                        }
-                        if (rand() % 100 < 20) {
-                            if (rand() % 2 == 0 && g_pos_y_bots_local[b] > 0) g_pos_y_bots_local[b]--;
-                            else if (g_pos_y_bots_local[b] < ALTO_PISTA - 1) g_pos_y_bots_local[b]++;
-                        }
-                        char bot_str[8];
-                        sprintf(bot_str, "[B%d]", b + 1);
-                        dibujarCaracter(g_pos_x_bots_local[b], g_pos_y_bots_local[b], bot_str, (g_inmunidad_bots_local[b] > 0 ? 14 : 11 + b), old_pos_x_bots[b], old_pos_y_bots[b], bot_str);
-                        for (k = 0; k < NUM_OBSTACULOS; k++) {
-                            if (g_pos_x_bots_local[b] == g_obstaculo_x[k] && g_pos_y_bots_local[b] == g_obstaculo_y[k]) {
-                                if (g_inmunidad_bots_local[b] > 0) {
-                                    gotoxy(0, MENSAJES_Y_OFFSET); setColor(15);
-                                    printf("Bot %d es INMUNE al obstaculo!            \n", b + 1);
-                                    Sleep(300);
-                                    gotoxy(0, MENSAJES_Y_OFFSET); printf("                                             \n");
-                                } else {
-                                    g_bot_estado_local[b] = 1;
-                                    g_obstaculo_x[k] = -1;
-                                    g_obstaculo_y[k] = -1;
-                                    gotoxy(g_pos_x_bots_local[b] + 1, g_pos_y_bots_local[b] + 2);
-                                    setColor(10);
-                                    printf(" ");
-                                    char bot_str2[8];
-                                    sprintf(bot_str2, "[B%d]", b + 1);
-                                    dibujarCaracter(-1, -1, "", 0, old_pos_x_bots[b], old_pos_y_bots[b], bot_str2);
-                                    gotoxy(0, MENSAJES_Y_OFFSET + 1);
-                                    printf("Bot %d ha chocado con 'X' y ha sido eliminado de la carrera!             \n", b + 1);
-                                    Sleep(500);
-                                    gotoxy(0, MENSAJES_Y_OFFSET + 1);
-                                    printf("                                                              \n");
+                                if (libre_abajo) {
+                                    g_pos_y_bots[b]++;
+                                    movido = true;
                                 }
+                            }
+                            // Si no puede moverse, se queda en su lugar
+                        }
+                        // Recoger item si hay
+                        for (int k = 0; k < NUM_ITEMS; k++) {
+                            if (g_item_recogido[k] == 0 && g_item_x[k] == g_pos_x_bots[b] && g_item_y[k] == g_pos_y_bots[b]) {
+                                aplicarEfectoItem(k, 0, b);
                                 break;
                             }
                         }
-                    } else if (bot_llego_meta[b]) {
-                        char bot_str[8];
-                        sprintf(bot_str, "[B%d]", b + 1);
-                        dibujarCaracter(old_pos_x_bots[b], old_pos_y_bots[b], "    ", 0, old_pos_x_bots[b], old_pos_y_bots[b], bot_str);
-                    }
-                }
-            }
-            for (k = 0; k < NUM_ITEMS; k++) {
-                if (g_item_recogido[k] == 0) {
-                    if (!player1_llego_meta && g_pos_x_player1 == g_item_x[k] && g_pos_y_player1 == g_item_y[k]) {
-                        aplicarEfectoItem(k, 1, -1, 2);
-                    }
-                    if (!player2_llego_meta && g_pos_x_player2 == g_item_x[k] && g_pos_y_player2 == g_item_y[k]) {
-                        aplicarEfectoItem(k, 2, -1, 2);
-                    }
-                    if (incluir_bots && num_bots > 0) {
-                        for (int b = 0; b < num_bots; b++) {
-                            if (g_bot_estado_local[b] == 0 && !bot_llego_meta[b] && g_pos_x_bots_local[b] == g_item_x[k] && g_pos_y_bots_local[b] == g_item_y[k]) {
-                                aplicarEfectoItem(k, -1, b, 2);
+                        // Usar item aleatoriamente
+                        if (g_item_portado_bots[b] != -1 && !g_item_en_uso_bots[b]) {
+                            if (rand() % 30 == 0) { // Probabilidad de usar item
+                                usarItemPortadoBot(&g_pos_x_bots[b], &g_pos_y_bots[b], &g_inmunidad_bots[b], &g_item_portado_bots[b], &g_item_en_uso_bots[b], b);
                             }
                         }
                     }
+                    // Dibuja bot
+                    if (!bot_llego_meta[b] && !bot_eliminado[b]) // <--- INSTRUCCION 4
+                        dibujarCaracter(g_pos_x_bots[b], g_pos_y_bots[b], "[B]", (g_inmunidad_bots[b] > 0 ? 14 : 11), old_pos_x_bots[b], old_pos_y_bots[b], "[B]");
+                    else
+                        dibujarCaracter(-1, -1, "", 0, old_pos_x_bots[b], old_pos_y_bots[b], "[B]");
                 }
             }
-            for (k = 0; k < NUM_OBSTACULOS; k++) {
-                if (!player1_llego_meta && g_pos_x_player1 == g_obstaculo_x[k] && g_pos_y_player1 == g_obstaculo_y[k]) {
-                    if (g_inmunidad_player1 > 0) {
-                        gotoxy(0, MENSAJES_Y_OFFSET); setColor(15);
-                        printf("Jugador 1 es INMUNE al obstaculo!            \n");
-                        Sleep(300);
-                        gotoxy(0, MENSAJES_Y_OFFSET); printf("                                             \n");
-                    } else {
-                        limpiarPantalla();
-                        printf("Jugador 1 choco con un obstaculo 'X' y ha sido eliminado. Jugador 2 es el ganador.\n");
-                        derrotas_j1++;
-                        victorias_j2++;
-                        goto fin_juego_dos_jugadores;
-                    }
+            // Recoger items jugadores
+            for (int k = 0; k < NUM_ITEMS; k++) {
+                if (g_item_recogido[k] == 0 && g_item_x[k] == g_pos_x_player1 && g_item_y[k] == g_pos_y_player1 && !player1_llego_meta && !player1_eliminado) {
+                    aplicarEfectoItem(k, 1, -1);
                 }
-                if (!player2_llego_meta && g_pos_x_player2 == g_obstaculo_x[k] && g_pos_y_player2 == g_obstaculo_y[k]) {
-                    if (g_inmunidad_player2 > 0) {
-                        gotoxy(0, MENSAJES_Y_OFFSET); setColor(15);
-                        printf("Jugador 2 es INMUNE al obstaculo!            \n");
-                        Sleep(300);
-                        gotoxy(0, MENSAJES_Y_OFFSET); printf("                                             \n");
-                    } else {
-                        limpiarPantalla();
-                        printf("Jugador 2 choco con un obstaculo 'X' y ha sido eliminado. Jugador 1 es el ganador.\n");
-                        derrotas_j2++;
-                        victorias_j1++;
-                        goto fin_juego_dos_jugadores;
+                if (g_item_recogido[k] == 0 && g_item_x[k] == g_pos_x_player2 && g_item_y[k] == g_pos_y_player2 && !player2_llego_meta && !player2_eliminado) {
+                    aplicarEfectoItem(k, 2, -1);
+                }
+            }
+            // Colision con obstaculos jugadores
+            for (int k = 0; k < NUM_OBSTACULOS; k++) {
+                if (g_obstaculo_x[k] == g_pos_x_player1 && g_obstaculo_y[k] == g_pos_y_player1 && g_inmunidad_player1 == 0 && !player1_llego_meta && !player1_eliminado) {
+                    player1_llego_meta = true; // Eliminar jugador
+                    player1_eliminado = true;
+                    dibujarCaracter(-1, -1, "", 0, g_pos_x_player1, g_pos_y_player1, "[o1]");
+                    gotoxy(0, MENSAJES_Y_OFFSET);
+                    setColor(12);
+                    printf("Jugador 1 eliminado por colision!                           ");
+                    Sleep(2000);
+                }
+                if (g_obstaculo_x[k] == g_pos_x_player2 && g_obstaculo_y[k] == g_pos_y_player2 && g_inmunidad_player2 == 0 && !player2_llego_meta && !player2_eliminado) {
+                    player2_llego_meta = true; // Eliminar jugador
+                    player2_eliminado = true;
+                    dibujarCaracter(-1, -1, "", 0, g_pos_x_player2, g_pos_y_player2, "[o2]");
+                    gotoxy(0, MENSAJES_Y_OFFSET);
+                    setColor(12);
+                    printf("Jugador 2 eliminado por colision!                           ");
+                    Sleep(2000);
+                }
+            }
+            // Colision con obstaculos bots
+            for (int b = 0; b < num_bots; b++) {
+                for (int k = 0; k < NUM_OBSTACULOS; k++) {
+                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] && g_inmunidad_bots[b] == 0 && !bot_llego_meta[b] && !bot_eliminado[b]) {
+                        bot_llego_meta[b] = true; // Eliminar bot
+                        bot_eliminado[b] = true;
+                        dibujarCaracter(-1, -1, "", 0, g_pos_x_bots[b], g_pos_y_bots[b], "[B]");
+                        gotoxy(0, MENSAJES_Y_OFFSET);
+                        setColor(12);
+                        printf("Bot %d eliminado por colision!                           ", b + 1);
+                        Sleep(1500);
                     }
                 }
             }
-            if (!player1_llego_meta && g_pos_x_player1 >= META) {
+            // Llegada a meta
+            double tiempo_actual = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+            if (!player1_llego_meta && !player1_eliminado && g_pos_x_player1 >= META) {
                 player1_llego_meta = true;
-                dibujarCaracter(g_pos_x_player1, g_pos_y_player1, "    ", 0, g_pos_x_player1, g_pos_y_player1, "[o1]");
-                gotoxy(0, MENSAJES_Y_OFFSET + 6);
-                setColor(10);
-                printf("Jugador 1 ha llegado a la meta!                                   ");
-                double tiempo = (double)(clock() - start_time) / CLOCKS_PER_SEC;
                 strcpy(llegadas[total_llegadas].nombre, "Jugador 1");
-                llegadas[total_llegadas].tiempo = tiempo;
+                llegadas[total_llegadas].tiempo = tiempo_actual;
                 total_llegadas++;
+                victorias_j1++;
+                derrotas_j2++;
             }
-            if (!player2_llego_meta && g_pos_x_player2 >= META) {
+            if (!player2_llego_meta && !player2_eliminado && g_pos_x_player2 >= META) {
                 player2_llego_meta = true;
-                dibujarCaracter(g_pos_x_player2, g_pos_y_player2, "    ", 0, g_pos_x_player2, g_pos_y_player2, "[o2]");
-                gotoxy(0, MENSAJES_Y_OFFSET + 7);
-                setColor(13);
-                printf("Jugador 2 ha llegado a la meta!                                   ");
-                double tiempo = (double)(clock() - start_time) / CLOCKS_PER_SEC;
                 strcpy(llegadas[total_llegadas].nombre, "Jugador 2");
-                llegadas[total_llegadas].tiempo = tiempo;
+                llegadas[total_llegadas].tiempo = tiempo_actual;
                 total_llegadas++;
+                victorias_j2++;
+                derrotas_j1++;
             }
-            if (incluir_bots && num_bots > 0) {
-                for (int b = 0; b < num_bots; b++) {
-                    if (!bot_llego_meta[b] && g_bot_estado_local[b] == 0 && g_pos_x_bots_local[b] >= META) {
-                        bot_llego_meta[b] = true;
-                        char bot_str[8];
-                        sprintf(bot_str, "[B%d]", b + 1);
-                        dibujarCaracter(g_pos_x_bots_local[b], g_pos_y_bots_local[b], "    ", 0, g_pos_x_bots_local[b], g_pos_y_bots_local[b], bot_str);
-                        gotoxy(0, MENSAJES_Y_OFFSET + 8 + b);
-                        setColor(11 + b);
-                        printf("Bot %d ha llegado a la meta!                                       ", b + 1);
-                        double tiempo = (double)(clock() - start_time) / CLOCKS_PER_SEC;
-                        sprintf(llegadas[total_llegadas].nombre, "Bot %d", b + 1);
-                        llegadas[total_llegadas].tiempo = tiempo;
-                        total_llegadas++;
-                    }
-                }
-            }
-            int en_carrera = 0;
-            if (!player1_llego_meta) en_carrera++;
-            if (!player2_llego_meta) en_carrera++;
-            if (incluir_bots && num_bots > 0) {
-                for (int b = 0; b < num_bots; b++) {
-                    if (!bot_llego_meta[b] && g_bot_estado_local[b] == 0) en_carrera++;
-                }
-            }
-            if (en_carrera == 0) {
-                limpiarPantalla();
-                printf("Todos han llegado a la meta o han sido eliminados.\n");
-                printf("Fin de la carrera.\n");
-                mostrarOrdenLlegada(llegadas, total_llegadas);
-                empates++;
-                goto fin_juego_dos_jugadores;
-            }
-            if (GetAsyncKeyState('P') & 0x8000) {
-                limpiarPantalla();
-                printf("Juego terminado.\n");
-                return;
-            }
-            Sleep(30);
-        }
-    fin_juego_dos_jugadores:
-        mostrarMarcadores(true);
-        mostrarControlesJugador2();
-        printf("\nPresiona 'R' para reiniciar o 'P' para volver al menu: ");
-        fflush(stdin);
-        do {
-            opcion = tolower(_getch());
-        } while (opcion != 'r' && opcion != 'p');
-    }
-}
-
-// --- JUEGO UN JUGADOR ---
-
-void iniciarJuegoUnJugador() {
-    int num_bots, dificultad_bot, b, k;
-    char opcion = 'r';
-    clock_t start_time;
-    Llegada llegadas[1 + MAX_BOTS];
-    int total_llegadas = 0;
-    limpiarPantalla();
-    printf("--- Modo de Un Jugador ---\n");
-    printf("Cuantos bots quieres (1-%d)? ", MAX_BOTS);
-    scanf("%d", &num_bots);
-    while (num_bots < 1 || num_bots > MAX_BOTS) {
-        printf("Numero de bots invalido. Por favor, introduce un valor entre 1 y %d: ", MAX_BOTS);
-        while (getchar() != '\n');
-        scanf("%d", &num_bots);
-    }
-    fflush(stdin);
-    printf("Selecciona la dificultad de los bots:\n");
-    printf("1. Facil\n2. Normal\n3. Dificil\nTu opcion: ");
-    scanf("%d", &dificultad_bot);
-    while (dificultad_bot < 1 || dificultad_bot > 3) {
-        printf("Dificultad invalida. Por favor, introduce 1, 2 o 3: ");
-        while (getchar() != '\n');
-        scanf("%d", &dificultad_bot);
-    }
-    fflush(stdin);
-    while (opcion == 'r') {
-        limpiarPantalla();
-        g_pos_x_player1 = 0;
-        g_pos_y_player1 = ALTO_PISTA / 2;
-        g_num_active_bots = num_bots;
-        g_inmunidad_player1 = 0;
-        for (b = 0; b < MAX_BOTS; b++) {
-            g_inmunidad_bots[b] = 0;
-            g_bot_estado[b] = 0;
-        }
-        for (b = 0; b < num_bots; b++) {
-            g_pos_x_bots[b] = 0;
-            g_pos_y_bots[b] = (ALTO_PISTA / (num_bots + 1)) * (b + 1);
-            if (g_pos_y_bots[b] == g_pos_y_player1) g_pos_y_bots[b] = (g_pos_y_bots[b] + 1) % ALTO_PISTA;
-            g_bot_estado[b] = 0;
-        }
-        srand((unsigned int)time(NULL));
-        start_time = clock();
-        total_llegadas = 0;
-        for (int l = 0; l < 1 + MAX_BOTS; ++l) llegadas[l].nombre[0] = '\0';
-        organizarObstaculosYItems();
-        dibujarPistaBase();
-        mostrarMarcadores(false);
-        int old_pos_x_jugador = g_pos_x_player1, old_pos_y_jugador = g_pos_y_player1;
-        int old_pos_x_bots[MAX_BOTS], old_pos_y_bots[MAX_BOTS];
-        for (b = 0; b < num_bots; b++) {
-            old_pos_x_bots[b] = g_pos_x_bots[b];
-            old_pos_y_bots[b] = g_pos_y_bots[b];
-        }
-        bool player_llego_meta = false, bot_llego_meta[MAX_BOTS] = {false};
-        while (1) {
-            gotoxy(0, 0);
-            setColor(10);
-            printf("Tiempo jugado: %.2f segundos", (double)(clock() - start_time) / CLOCKS_PER_SEC);
-            if (g_inmunidad_player1 > 0) g_inmunidad_player1--;
-            for (b = 0; b < num_bots; b++) if (g_inmunidad_bots[b] > 0) g_inmunidad_bots[b]--;
-            old_pos_x_jugador = g_pos_x_player1; old_pos_y_jugador = g_pos_y_player1;
-            for (b = 0; b < num_bots; b++) {
-                old_pos_x_bots[b] = g_pos_x_bots[b];
-                old_pos_y_bots[b] = g_pos_y_bots[b];
-            }
-            if (!player_llego_meta) {
-                if (GetAsyncKeyState('D') & 0x8000) g_pos_x_player1++;
-                if (GetAsyncKeyState('A') & 0x8000 && g_pos_x_player1 > 0) g_pos_x_player1--;
-                if (GetAsyncKeyState('W') & 0x8000 && g_pos_y_player1 > 0) g_pos_y_player1--;
-                if (GetAsyncKeyState('S') & 0x8000 && g_pos_y_player1 < ALTO_PISTA - 1) g_pos_y_player1++;
-            }
-            if (!player_llego_meta)
-                dibujarCaracter(g_pos_x_player1, g_pos_y_player1, "[P]", (g_inmunidad_player1 > 0 ? 14 : 9), old_pos_x_jugador, old_pos_y_jugador, "[P]");
-            else
-                dibujarCaracter(old_pos_x_jugador, old_pos_y_jugador, "   ", 0, old_pos_x_jugador, old_pos_y_jugador, "[P]");
-            for (k = 0; k < NUM_ITEMS; k++) {
-                if (g_item_recogido[k] == 0) {
-                    if (!player_llego_meta && g_pos_x_player1 == g_item_x[k] && g_pos_y_player1 == g_item_y[k]) {
-                        aplicarEfectoItem(k, 0, -1, 1);
-                    }
-                    for (b = 0; b < num_bots; b++) {
-                        if (g_bot_estado[b] == 0 && !bot_llego_meta[b] && g_pos_x_bots[b] == g_item_x[k] && g_pos_y_bots[b] == g_item_y[k]) {
-                            aplicarEfectoItem(k, -1, b, 1);
-                        }
-                    }
-                }
-            }
-            for (b = 0; b < num_bots; b++) {
-                if (g_bot_estado[b] == 0 && !bot_llego_meta[b]) {
-                    int next_x = g_pos_x_bots[b] + 1;
-                    int next_y = g_pos_y_bots[b];
-                    bool hay_obstaculo = false;
-                    for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                        if (g_obstaculo_x[k] == next_x && g_obstaculo_y[k] == next_y) {
-                            hay_obstaculo = true;
-                            break;
-                        }
-                    }
-                    if (dificultad_bot == 1) {
-                        if (!hay_obstaculo) g_pos_x_bots[b]++;
-                        else {
-                            if (g_pos_y_bots[b] > 0) {
-                                bool libre_arriba = true;
-                                for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] - 1) {
-                                        libre_arriba = false;
-                                        break;
-                                    }
-                                }
-                                if (libre_arriba) g_pos_y_bots[b]--;
-                                else if (g_pos_y_bots[b] < ALTO_PISTA - 1) {
-                                    bool libre_abajo = true;
-                                    for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                        if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] + 1) {
-                                            libre_abajo = false;
-                                            break;
-                                        }
-                                    }
-                                    if (libre_abajo) g_pos_y_bots[b]++;
-                                }
-                            } else if (g_pos_y_bots[b] < ALTO_PISTA - 1) {
-                                bool libre_abajo = true;
-                                for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] + 1) {
-                                        libre_abajo = false;
-                                        break;
-                                    }
-                                }
-                                if (libre_abajo) g_pos_y_bots[b]++;
-                            }
-                        }
-                        if (rand() % 100 < 20) {
-                            if (rand() % 2 == 0 && g_pos_y_bots[b] > 0) g_pos_y_bots[b]--;
-                            else if (g_pos_y_bots[b] < ALTO_PISTA - 1) g_pos_y_bots[b]++;
-                        }
-                    } else if (dificultad_bot == 2) {
-                        if (!hay_obstaculo) g_pos_x_bots[b]++;
-                        else {
-                            if (g_pos_y_bots[b] > 0) {
-                                bool libre_arriba = true;
-                                for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] - 1) {
-                                        libre_arriba = false;
-                                        break;
-                                    }
-                                }
-                                if (libre_arriba) g_pos_y_bots[b]--;
-                                else if (g_pos_y_bots[b] < ALTO_PISTA - 1) {
-                                    bool libre_abajo = true;
-                                    for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                        if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] + 1) {
-                                            libre_abajo = false;
-                                            break;
-                                        }
-                                    }
-                                    if (libre_abajo) g_pos_y_bots[b]++;
-                                }
-                            } else if (g_pos_y_bots[b] < ALTO_PISTA - 1) {
-                                bool libre_abajo = true;
-                                for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] + 1) {
-                                        libre_abajo = false;
-                                        break;
-                                    }
-                                }
-                                if (libre_abajo) g_pos_y_bots[b]++;
-                            }
-                        }
-                        if (rand() % 100 < 30) {
-                            if (rand() % 2 == 0 && g_pos_y_bots[b] > 0) g_pos_y_bots[b]--;
-                            else if (g_pos_y_bots[b] < ALTO_PISTA - 1) g_pos_y_bots[b]++;
-                        }
-                    } else {
-                        if (!hay_obstaculo) g_pos_x_bots[b]++;
-                        else {
-                            bool esquivado = false;
-                            for (int dy = 1; dy <= g_pos_y_bots[b]; dy++) {
-                                bool libre = true;
-                                for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] - dy) {
-                                        libre = false;
-                                        break;
-                                    }
-                                }
-                                if (libre) {
-                                    g_pos_y_bots[b] -= dy;
-                                    esquivado = true;
-                                    break;
-                                }
-                            }
-                            if (!esquivado) {
-                                for (int dy = 1; dy < ALTO_PISTA - g_pos_y_bots[b]; dy++) {
-                                    bool libre = true;
-                                    for (int k = 0; k < NUM_OBSTACULOS; k++) {
-                                        if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] + dy) {
-                                            libre = false;
-                                            break;
-                                        }
-                                    }
-                                    if (libre) {
-                                        g_pos_y_bots[b] += dy;
-                                        esquivado = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!esquivado) g_pos_x_bots[b]++;
-                        }
-                        if (rand() % 100 < 40) {
-                            if (rand() % 2 == 0 && g_pos_y_bots[b] > 0) g_pos_y_bots[b]--;
-                            else if (g_pos_y_bots[b] < ALTO_PISTA - 1) g_pos_y_bots[b]++;
-                        }
-                    }
-                    char bot_str[8];
-                    sprintf(bot_str, "[B%d]", b + 1);
-                    dibujarCaracter(g_pos_x_bots[b], g_pos_y_bots[b], bot_str, (g_inmunidad_bots[b] > 0 ? 14 : 11 + b), old_pos_x_bots[b], old_pos_y_bots[b], bot_str);
-                    for (k = 0; k < NUM_OBSTACULOS; k++) {
-                        if (g_pos_x_bots[b] == g_obstaculo_x[k] && g_pos_y_bots[b] == g_obstaculo_y[k]) {
-                            if (g_inmunidad_bots[b] > 0) {
-                                gotoxy(0, MENSAJES_Y_OFFSET); setColor(15);
-                                printf("Bot %d es INMUNE al obstaculo!            \n", b + 1);
-                                Sleep(300);
-                                gotoxy(0, MENSAJES_Y_OFFSET); printf("                                             \n");
-                            } else {
-                                g_bot_estado[b] = 1;
-                                g_num_active_bots--;
-                                g_obstaculo_x[k] = -1;
-                                g_obstaculo_y[k] = -1;
-                                gotoxy(g_pos_x_bots[b] + 1, g_pos_y_bots[b] + 2);
-                                setColor(10);
-                                printf(" ");
-                                char bot_str2[8];
-                                sprintf(bot_str2, "[B%d]", b + 1);
-                                dibujarCaracter(-1, -1, "", 0, old_pos_x_bots[b], old_pos_y_bots[b], bot_str2);
-                                gotoxy(0, MENSAJES_Y_OFFSET + 1);
-                                printf("Bot %d ha chocado con 'X' y ha sido eliminado de la carrera!             \n", b + 1);
-                                Sleep(500);
-                                gotoxy(0, MENSAJES_Y_OFFSET + 1);
-                                printf("                                                              \n");
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
-            for (k = 0; k < NUM_OBSTACULOS; k++) {
-                if (!player_llego_meta && g_pos_x_player1 == g_obstaculo_x[k] && g_pos_y_player1 == g_obstaculo_y[k]) {
-                    if (g_inmunidad_player1 > 0) {
-                        gotoxy(0, MENSAJES_Y_OFFSET); setColor(15);
-                        printf("Jugador es INMUNE al obstaculo!            \n");
-                        Sleep(300);
-                        gotoxy(0, MENSAJES_Y_OFFSET); printf("                                             \n");
-                    } else {
-                        limpiarPantalla();
-                        printf("Chocaste con un obstaculo 'X' y has sido eliminado!\n");
-                        derrotas_jugador_un_jugador++;
-                        goto fin_juego_un_jugador;
-                    }
-                }
-            }
-            if (!player_llego_meta && g_pos_x_player1 >= META) {
-                player_llego_meta = true;
-                dibujarCaracter(g_pos_x_player1, g_pos_y_player1, "   ", 0, g_pos_x_player1, g_pos_y_player1, "[P]");
-                gotoxy(0, MENSAJES_Y_OFFSET + 6);
-                setColor(10);
-                printf("Jugador ha llegado a la meta!                                   ");
-                double tiempo = (double)(clock() - start_time) / CLOCKS_PER_SEC;
-                strcpy(llegadas[total_llegadas].nombre, "Jugador");
-                llegadas[total_llegadas].tiempo = tiempo;
-                total_llegadas++;
-            }
-            for (b = 0; b < num_bots; b++) {
-                if (!bot_llego_meta[b] && g_bot_estado[b] == 0 && g_pos_x_bots[b] >= META) {
+            for (int b = 0; b < num_bots; b++) {
+                if (!bot_llego_meta[b] && g_pos_x_bots[b] >= META) {
                     bot_llego_meta[b] = true;
-                    g_num_active_bots--;
-                    char bot_str[8];
-                    sprintf(bot_str, "[B%d]", b + 1);
-                    dibujarCaracter(g_pos_x_bots[b], g_pos_y_bots[b], "    ", 0, g_pos_x_bots[b], g_pos_y_bots[b], bot_str);
-                    gotoxy(0, MENSAJES_Y_OFFSET + 8 + b);
-                    setColor(11 + b);
-                    printf("Bot %d ha llegado a la meta!                                       ", b + 1);
-                    double tiempo = (double)(clock() - start_time) / CLOCKS_PER_SEC;
-                    sprintf(llegadas[total_llegadas].nombre, "Bot %d", b + 1);
-                    llegadas[total_llegadas].tiempo = tiempo;
+                    char nombre_bot[32];
+                    sprintf(nombre_bot, "Bot %d", b + 1);
+                    strcpy(llegadas[total_llegadas].nombre, nombre_bot);
+                    llegadas[total_llegadas].tiempo = tiempo_actual;
                     total_llegadas++;
                 }
             }
-            int en_carrera = 0;
-            if (!player_llego_meta) en_carrera++;
-            for (b = 0; b < num_bots; b++) {
-                if (!bot_llego_meta[b] && g_bot_estado[b] == 0) en_carrera++;
-            }
-            if (en_carrera == 0) {
+            // Si todos han llegado a meta o sido eliminados, termina
+            int total_participantes = 2 + num_bots;
+            int terminados = 0; // Llegados + eliminados
+            if (player1_llego_meta || player1_eliminado) terminados++;
+            if (player2_llego_meta || player2_eliminado) terminados++;
+            for (int b = 0; b < num_bots; b++) if (bot_llego_meta[b] || bot_eliminado[b]) terminados++; // <--- INSTRUCCION 5
+            if (terminados == total_participantes) {
                 limpiarPantalla();
-                printf("Todos han llegado a la meta o han sido eliminados.\n");
-                printf("Fin de la carrera.\n");
                 mostrarOrdenLlegada(llegadas, total_llegadas);
-                if (player_llego_meta)
-                    victorias_jugador_un_jugador++;
-                else
-                    derrotas_jugador_un_jugador++;
-                goto fin_juego_un_jugador;
-            }
-            for (b = 0; b < num_bots; b++) {
-                if (g_bot_estado[b] == 0 && !bot_llego_meta[b] && !player_llego_meta) {
-                    if (g_pos_x_player1 == g_pos_x_bots[b] && g_pos_y_player1 == g_pos_y_bots[b]) {
-                        g_bot_estado[b] = 1;
-                        g_num_active_bots--;
-                        char bot_str[8];
-                        sprintf(bot_str, "[B%d]", b + 1);
-                        dibujarCaracter(-1, -1, "", 0, old_pos_x_bots[b], old_pos_y_bots[b], bot_str);
-                        gotoxy(0, MENSAJES_Y_OFFSET);
-                        printf("Chocaste con el Bot %d! El bot ha sido eliminado de la carrera.               \n", b + 1);
-                        Sleep(500);
-                        gotoxy(0, MENSAJES_Y_OFFSET);
-                        printf("                                                              \n");
-                        break;
+                printf("Fin de la carrera. Presiona 'R' para reiniciar o 'P' para salir.\n");
+                while (1) {
+                    if (_kbhit()) {
+                        char c = _getch();
+                        if (c == 'r' || c == 'R') {
+                            opcion = 'r';
+                            break;
+                        } else if (c == 'p' || c == 'P') {
+                            opcion = 'p';
+                            break;
+                        }
                     }
+                    Sleep(100);
                 }
+                break;
             }
-            if (GetAsyncKeyState('P') & 0x8000) {
-                limpiarPantalla();
-                printf("Juego terminado.\n");
-                return;
+            // Permitir salir o reiniciar en cualquier momento
+            if (_kbhit()) {
+                char c = _getch();
+                if (c == 'r' || c == 'R') {
+                    opcion = 'r';
+                    break;
+                } else if (c == 'p' || c == 'P') {
+                    opcion = 'p';
+                    break;
+                }
             }
             Sleep(30);
         }
-    fin_juego_un_jugador:
-        mostrarMarcadores(false);
-        if (total_llegadas > 0) mostrarOrdenLlegada(llegadas, total_llegadas);
-        printf("\nPresiona 'R' para reiniciar o 'P' para volver al menu: ");
-        fflush(stdin);
-        do {
-            opcion = tolower(_getch());
-        } while (opcion != 'r' && opcion != 'p');
     }
 }
 
+// --- FUNCIONES PARA EL MODO DE UN JUGADOR ---
+
+void iniciarJuegoUnJugador() {
+    char opcion = 'r';
+    clock_t start_time;
+    int old_pos_x, old_pos_y;
+    Llegada llegadas[1 + MAX_BOTS];
+    int total_llegadas = 0;
+    int num_bots = 0;
+    bool player_eliminado = false;
+    do {
+        limpiarPantalla();
+        printf("--- Modo Un Jugador ---\n");
+        printf("Cuantos bots quieres? (1-%d): ", MAX_BOTS);
+        scanf("%d", &num_bots);
+        while (num_bots < 1 || num_bots > MAX_BOTS) {
+            printf("Numero de bots invalido. Por favor, introduce un valor entre 1 y %d: ", MAX_BOTS);
+            scanf("%d", &num_bots);
+        }
+        fflush(stdin);
+
+        while (opcion == 'r') {
+            limpiarPantalla();
+            g_pos_x_player1 = 0;
+            g_pos_y_player1 = ALTO_PISTA / 2;
+            g_inmunidad_player1 = 0;
+            g_item_portado_player1 = -1;
+            g_item_en_uso_player1 = false;
+            total_llegadas = 0;
+            player_eliminado = false;
+            for (int l = 0; l < 1 + MAX_BOTS; ++l) llegadas[l].nombre[0] = '\0';
+            srand((unsigned int)time(NULL));
+            start_time = clock();
+            organizarObstaculosYItems();
+            dibujarPistaBase();
+            mostrarMarcadores(false);
+            old_pos_x = g_pos_x_player1; old_pos_y = g_pos_y_player1;
+            for (int b = 0; b < MAX_BOTS; b++) {
+                g_pos_x_bots[b] = 0;
+                g_pos_y_bots[b] = (ALTO_PISTA / (max2(num_bots, 1) + 1)) * (b + 1);
+                if (g_pos_y_bots[b] >= ALTO_PISTA) g_pos_y_bots[b] = ALTO_PISTA - 1;
+                g_inmunidad_bots[b] = 0;
+                g_bot_estado[b] = 0;
+                g_item_portado_bots[b] = -1;
+                g_item_en_uso_bots[b] = false;
+            }
+            bool player_llego_meta = false;
+            bool bot_llego_meta[MAX_BOTS] = {false};
+            bool bot_eliminado[MAX_BOTS] = {false}; // <--- AGREGADO SEGUN INSTRUCCION 6
+            mostrarItemPortado(0, g_item_portado_player1, g_item_en_uso_player1);
+            for (int b = 0; b < num_bots; b++) {
+                mostrarItemPortadoBot(b, g_item_portado_bots[b], g_item_en_uso_bots[b]);
+            }
+            while (1) {
+                gotoxy(0, 0);
+                setColor(10);
+                printf("Tiempo jugado: %.2f segundos", (double)(clock() - start_time) / CLOCKS_PER_SEC);
+                if (g_inmunidad_player1 > 0) g_inmunidad_player1--;
+                for (int b = 0; b < MAX_BOTS; b++) if (g_inmunidad_bots[b] > 0) g_inmunidad_bots[b]--;
+                old_pos_x = g_pos_x_player1; old_pos_y = g_pos_y_player1;
+                // Jugador
+                if (!player_llego_meta && !player_eliminado) {
+                    if (GetAsyncKeyState('D') & 0x8000) g_pos_x_player1 = min2(g_pos_x_player1 + 1, META);
+                    if (GetAsyncKeyState('A') & 0x8000 && g_pos_x_player1 > 0) g_pos_x_player1--;
+                    if (GetAsyncKeyState('W') & 0x8000 && g_pos_y_player1 > 0) g_pos_y_player1--;
+                    if (GetAsyncKeyState('S') & 0x8000 && g_pos_y_player1 < ALTO_PISTA - 1) g_pos_y_player1++;
+                    if (GetAsyncKeyState('Q') & 0x8000) {
+                        usarItemPortado(&g_pos_x_player1, &g_pos_y_player1, &g_inmunidad_player1,
+                                        &g_item_portado_player1, &g_item_en_uso_player1, 0, 1);
+                        Sleep(100);
+                    }
+                }
+                // Dibuja jugador
+                if (!player_llego_meta && !player_eliminado)
+                    dibujarCaracter(g_pos_x_player1, g_pos_y_player1, "[o1]", (g_inmunidad_player1 > 0 ? 14 : 9), old_pos_x, old_pos_y, "[o1]");
+                else
+                    dibujarCaracter(-1, -1, "", 0, old_pos_x, old_pos_y, "[o1]");
+                // IA de bots y dibujo
+                int old_pos_x_bots[MAX_BOTS], old_pos_y_bots[MAX_BOTS];
+                for (int b = 0; b < MAX_BOTS; b++) {
+                    old_pos_x_bots[b] = g_pos_x_bots[b];
+                    old_pos_y_bots[b] = g_pos_y_bots[b];
+                }
+                for (int b = 0; b < num_bots; b++) {
+                    if (g_bot_estado[b] == 0 && !bot_llego_meta[b] && !bot_eliminado[b]) { // <--- INSTRUCCION 6
+                        // IA simple de bot
+                        int next_x = g_pos_x_bots[b] + 1;
+                        bool hay_obstaculo = false;
+                        for (int k = 0; k < NUM_OBSTACULOS; k++) {
+                            if (g_obstaculo_x[k] == next_x && g_obstaculo_y[k] == g_pos_y_bots[b]) {
+                                hay_obstaculo = true;
+                                break;
+                            }
+                        }
+                        if (!hay_obstaculo) {
+                            g_pos_x_bots[b] = min2(g_pos_x_bots[b] + 1, META);
+                        } else {
+                            // Intentar evitar obstaculo
+                            bool movido = false;
+                            if (g_pos_y_bots[b] > 0) {
+                                bool libre_arriba = true;
+                                for (int k = 0; k < NUM_OBSTACULOS; k++) {
+                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] - 1) {
+                                        libre_arriba = false;
+                                        break;
+                                    }
+                                }
+                                if (libre_arriba) {
+                                    g_pos_y_bots[b]--;
+                                    movido = true;
+                                }
+                            }
+                            if (!movido && g_pos_y_bots[b] < ALTO_PISTA - 1) {
+                                bool libre_abajo = true;
+                                for (int k = 0; k < NUM_OBSTACULOS; k++) {
+                                    if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] + 1) {
+                                        libre_abajo = false;
+                                        break;
+                                    }
+                                }
+                                if (libre_abajo) {
+                                    g_pos_y_bots[b]++;
+                                    movido = true;
+                                }
+                            }
+                            // Si no puede moverse, se queda en su lugar
+                        }
+                        // Recoger item si hay
+                        for (int k = 0; k < NUM_ITEMS; k++) {
+                            if (g_item_recogido[k] == 0 && g_item_x[k] == g_pos_x_bots[b] && g_item_y[k] == g_pos_y_bots[b]) {
+                                aplicarEfectoItem(k, 0, b);
+                                break;
+                            }
+                        }
+                        // Usar item aleatoriamente
+                        if (g_item_portado_bots[b] != -1 && !g_item_en_uso_bots[b]) {
+                            if (rand() % 30 == 0) { // Probabilidad de usar item
+                                usarItemPortadoBot(&g_pos_x_bots[b], &g_pos_y_bots[b], &g_inmunidad_bots[b], &g_item_portado_bots[b], &g_item_en_uso_bots[b], b);
+                            }
+                        }
+                    }
+                    // Dibuja bot
+                    if (!bot_llego_meta[b] && !bot_eliminado[b]) // <--- INSTRUCCION 6
+                        dibujarCaracter(g_pos_x_bots[b], g_pos_y_bots[b], "[B]", (g_inmunidad_bots[b] > 0 ? 14 : 11), old_pos_x_bots[b], old_pos_y_bots[b], "[B]");
+                    else
+                        dibujarCaracter(-1, -1, "", 0, old_pos_x_bots[b], old_pos_y_bots[b], "[B]");
+                }
+                // Recoger items jugador
+                for (int k = 0; k < NUM_ITEMS; k++) {
+                    if (g_item_recogido[k] == 0 && g_item_x[k] == g_pos_x_player1 && g_item_y[k] == g_pos_y_player1 && !player_llego_meta && !player_eliminado) {
+                        aplicarEfectoItem(k, 1, -1);
+                    }
+                }
+                // Colision con obstaculos jugador
+                for (int k = 0; k < NUM_OBSTACULOS; k++) {
+                    if (g_obstaculo_x[k] == g_pos_x_player1 && g_obstaculo_y[k] == g_pos_y_player1 && g_inmunidad_player1 == 0 && !player_llego_meta && !player_eliminado) {
+                        player_llego_meta = true;
+                        player_eliminado = true;
+                        dibujarCaracter(-1, -1, "", 0, g_pos_x_player1, g_pos_y_player1, "[o1]");
+                        gotoxy(0, MENSAJES_Y_OFFSET);
+                        setColor(12);
+                        printf("Jugador eliminado por colision!                           ");
+                        Sleep(2000);
+                    }
+                }
+                // Colision con obstaculos bots
+                for (int b = 0; b < num_bots; b++) {
+                    for (int k = 0; k < NUM_OBSTACULOS; k++) {
+                        if (g_obstaculo_x[k] == g_pos_x_bots[b] && g_obstaculo_y[k] == g_pos_y_bots[b] && g_inmunidad_bots[b] == 0 && !bot_llego_meta[b] && !bot_eliminado[b]) {
+                            bot_llego_meta[b] = true; // Eliminar bot
+                            bot_eliminado[b] = true;
+                            dibujarCaracter(-1, -1, "", 0, g_pos_x_bots[b], g_pos_y_bots[b], "[B]");
+                            gotoxy(0, MENSAJES_Y_OFFSET);
+                            setColor(12);
+                            printf("Bot %d eliminado por colision!                           ", b + 1);
+                            Sleep(1500);
+                        }
+                    }
+                }
+                // Llegada a meta
+                double tiempo_actual = (double)(clock() - start_time) / CLOCKS_PER_SEC;
+                if (!player_llego_meta && !player_eliminado && g_pos_x_player1 >= META) {
+                    player_llego_meta = true;
+                    strcpy(llegadas[total_llegadas].nombre, "Jugador");
+                    llegadas[total_llegadas].tiempo = tiempo_actual;
+                    total_llegadas++;
+                    victorias_jugador_un_jugador++;
+                }
+                for (int b = 0; b < num_bots; b++) {
+                    if (!bot_llego_meta[b] && g_pos_x_bots[b] >= META) {
+                        bot_llego_meta[b] = true;
+                        char nombre_bot[32];
+                        sprintf(nombre_bot, "Bot %d", b + 1);
+                        strcpy(llegadas[total_llegadas].nombre, nombre_bot);
+                        llegadas[total_llegadas].tiempo = tiempo_actual;
+                        total_llegadas++;
+                    }
+                }
+                // Si todos han llegado a meta o sido eliminados, termina
+                int total_participantes = 1 + num_bots;
+                int terminados = 0;
+                if (player_llego_meta || player_eliminado) terminados++;
+                for (int b = 0; b < num_bots; b++) if (bot_llego_meta[b] || bot_eliminado[b]) terminados++; // <--- INSTRUCCION 6
+                if (terminados == total_participantes) {
+                    limpiarPantalla();
+                    mostrarOrdenLlegada(llegadas, total_llegadas);
+                    printf("Fin de la carrera. Presiona 'R' para reiniciar o 'P' para salir.\n");
+                    while (1) {
+                        if (_kbhit()) {
+                            char c = _getch();
+                            if (c == 'r' || c == 'R') {
+                                opcion = 'r';
+                                break;
+                            } else if (c == 'p' || c == 'P') {
+                                opcion = 'p';
+                                break;
+                            }
+                        }
+                        Sleep(100);
+                    }
+                    break;
+                }
+                // Permitir salir o reiniciar en cualquier momento
+                if (_kbhit()) {
+                    char c = _getch();
+                    if (c == 'r' || c == 'R') {
+                        opcion = 'r';
+                        break;
+                    } else if (c == 'p' || c == 'P') {
+                        opcion = 'p';
+                        break;
+                    }
+                }
+                Sleep(30);
+            }
+        }
+    } while (opcion == 'r');
+}
+
+// --- MENU PRINCIPAL ---
+
 int main() {
-    int modo_juego;
-    while (1) {
+    SetConsoleTitleA("Juego del Carro - Carrera");
+    while (true) {
         limpiarPantalla();
         setColor(15);
-        printf("==============================================\n");
-        printf("========== Bienvenido a la Carrera! ==========\n");
-        printf("==============================================\n");
-        printf("\nSelecciona el modo de juego:\n");
-        printf("1. Un Jugador (vs Bots)\n");
-        printf("2. Dos Jugadores\n");
+        printf("========================================\n");
+        printf("         JUEGO DEL CARRO - CARRERA      \n");
+        printf("========================================\n");
+        printf("1. Modo Un Jugador\n");
+        printf("2. Modo Dos Jugadores\n");
         printf("3. Salir\n");
-        printf("Tu opcion: ");
-        int res = scanf("%d", &modo_juego);
-        if (res != 1) {
-            fflush(stdin);
-            modo_juego = 0;
+        printf("Selecciona una opcion: ");
+        char opcion = _getch();
+        if (opcion == '1') {
+            iniciarJuegoUnJugador();
+        } else if (opcion == '2') {
+            iniciarJuegoDosJugadores();
+        } else if (opcion == '3') {
+            limpiarPantalla();
+            printf("Gracias por jugar!\n");
+            Sleep(1000);
+            break;
         } else {
-            fflush(stdin);
-        }
-        switch (modo_juego) {
-            case 1:
-                iniciarJuegoUnJugador();
-                break;
-            case 2:
-                iniciarJuegoDosJugadores();
-                break;
-            case 3:
-                limpiarPantalla();
-                printf("Gracias por jugar. Hasta pronto!\n");
-                return 0;
-            default:
-                printf("Opcion invalida. Por favor, introduce 1, 2 o 3.\n");
-                Sleep(1500);
-                break;
+            printf("\nOpcion invalida. Presiona una tecla para continuar...\n");
+            _getch();
         }
     }
     return 0;
